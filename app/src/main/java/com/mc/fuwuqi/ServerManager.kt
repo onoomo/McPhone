@@ -109,9 +109,12 @@ object ServerManager {
         return out.toList()
     }
 
-    /** 启动（异步，进度经 cb 回调）。成功回调 "OK"，失败回调 "ERR:xxx" */
-    fun start(ctx: android.content.Context, srv: JSONObject, cb: (String) -> Unit) {
-        userStop = false; restartCount = 0; lastCtx = ctx
+    /** 启动（异步，进度经 cb 回调）。成功回调 "OK"，失败回调 "ERR:xxx"
+     *  fromCrash=true 表示崩溃自动重启：不能重置 restartCount，否则连续崩溃计数永远到不了上限。 */
+    fun start(ctx: android.content.Context, srv: JSONObject, cb: (String) -> Unit, fromCrash: Boolean = false) {
+        userStop = false
+        if (!fromCrash) restartCount = 0
+        lastCtx = ctx
         val sid = srv.optString("id")
         // 若已有服务器在跑，直接返回，不注册任何备份任务
         if (runningId != null || starting) { cb("ERR:已有服务器在运行"); return }
@@ -280,7 +283,7 @@ object ServerManager {
                             logLine("· 服务器崩溃，5 秒后自动重启（第 $restartCount 次）…")
                             notifyCrash(lastCtx, true)
                             try { Thread.sleep(5000) } catch (_: Exception) {}
-                            start(lastCtx ?: return@Thread, srv) {
+                            start(lastCtx ?: return@Thread, srv, fromCrash = true) {
                                 logLine(if (it == "OK") "· 自动重启成功" else "· 自动重启失败：$it")
                             }
                         }
