@@ -1,0 +1,10 @@
+# Gradle / 构建产物
+.gradle/
+.kotlin/
+build/
+**/build/
+local.properties
+*.iml
+.idea/
+# APK 产物
+*.apk
