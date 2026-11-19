@@ -2,8 +2,14 @@ package com.mc.fuwuqi
 
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicLongArray
+import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.ArchiveStreamFactory
@@ -12,16 +18,23 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory
 /** HTTP 下载 + tar.xz / tar.gz 解包 */
 object Dl {
 
-    /** 下载到 destFile，cb(current,total) 每 200KB 回调一次，total 可为 -1 */
+    private const val CHUNKS = 8                 // 分块数（并发线程数）
+    private const val MIN_PARALLEL = 2L * 1024 * 1024  // 小于 2MB 不分包
+
+    /** 下载到 destFile，cb(current,total) 节流回调，total 可为 -1 */
     fun download(urlStr: String, destFile: File, cb: (Long, Long) -> Unit = { _, _ -> }): Boolean {
         destFile.parentFile?.mkdirs()
         DownloadService.start(App.inst, "下载 ${destFile.name}")
         DownloadService.progress(0, -1)
         try {
-            val urls = listOf(urlStr, "https://gh-proxy.com/$urlStr", "https://ghproxy.net/$urlStr")
+            if (destFile.exists() && destFile.length() > 0) return true
+            val sources = listOf(urlStr, "https://gh-proxy.com/$urlStr", "https://ghproxy.net/$urlStr")
+            val total = probeTotal(sources)
+            if (total > MIN_PARALLEL) return downloadParallel(sources, destFile, total, cb)
+
+            // 不支持 Range / 小文件：单线程多源兜底（原有逻辑）
             var lastErr: Exception? = null
-            for (u in urls) {
-                if (destFile.exists() && destFile.length() > 0) return true
+            for (u in sources) {
                 try {
                     downloadOne(u, destFile, cb)
                     if (destFile.length() > 0) return true
@@ -35,8 +48,165 @@ object Dl {
         }
     }
 
+    /** 探测文件总字节数：依次试各源的 Range: bytes=0-0，读 Content-Range 的 /total */
+    private fun probeTotal(sources: List<String>): Long {
+        for (u in sources) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = URL(u).openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 20000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", "MCFuwuqi/1.0")
+                conn.setRequestProperty("Range", "bytes=0-0")
+                if (conn.responseCode == 206) {
+                    val cr = conn.getHeaderField("Content-Range") ?: ""
+                    val total = cr.substringAfter('/', "").trim().toLongOrNull() ?: -1L
+                    if (total > 0) return total
+                }
+            } catch (_: Exception) {
+            } finally { conn?.disconnect() }
+        }
+        return -1L
+    }
+
+    /** 分块并行下载：CHUNKS 个线程各下一块，块内多源兜底，全部完成后顺序合并 */
+    private fun downloadParallel(
+        sources: List<String>, destFile: File, total: Long, cb: (Long, Long) -> Unit
+    ): Boolean {
+        val n = CHUNKS
+        val blockSize = (total + n - 1) / n
+        val sum = AtomicLong(0)
+        val done = AtomicLongArray(n)
+        val firstErr = AtomicReference<Throwable?>(null)
+        val latch = CountDownLatch(n)
+        val pool = Executors.newFixedThreadPool(n)
+        val cbLock = Any()
+        var lastCb = 0L
+        var lastCbTime = 0L
+
+        for (i in 0 until n) {
+            val start = blockSize * i
+            if (start >= total) { latch.countDown(); continue }
+            val end = minOf(start + blockSize - 1, total - 1)
+            val part = File(destFile.absolutePath + ".blk$i")
+            val initial = if (part.isFile) minOf(part.length(), end - start + 1) else 0L
+            done.set(i, initial)
+            sum.addAndGet(initial)
+
+            pool.execute {
+                try {
+                    downloadBlock(i, start, end, sources, part, sum, cbLock) { nowDone ->
+                        val now = System.currentTimeMillis()
+                        synchronized(cbLock) {
+                            if (nowDone - lastCb >= 200_000L || now - lastCbTime >= 300L) {
+                                cb(nowDone, total)
+                                DownloadService.progress(nowDone, total)
+                                lastCb = nowDone
+                                lastCbTime = now
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    firstErr.compareAndSet(null, e)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        try {
+            latch.await()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            firstErr.compareAndSet(null, e)
+        } finally {
+            pool.shutdownNow()
+        }
+
+        firstErr.get()?.let { err ->
+            for (i in 0 until n) File(destFile.absolutePath + ".blk$i").delete()
+            throw RuntimeException("分块下载失败", err)
+        }
+
+        // 顺序合并所有块到目标文件
+        val out = RandomAccessFile(destFile, "rw")
+        try {
+            out.setLength(0)
+            val buf = ByteArray(256 * 1024)
+            for (i in 0 until n) {
+                val start = blockSize * i
+                if (start >= total) break
+                val part = File(destFile.absolutePath + ".blk$i")
+                if (!part.isFile) throw RuntimeException("缺少分块 $i")
+                part.inputStream().use { ins ->
+                    while (true) {
+                        val c = ins.read(buf)
+                        if (c < 0) break
+                        out.write(buf, 0, c)
+                    }
+                }
+                part.delete()
+            }
+        } finally {
+            out.close()
+        }
+        if (destFile.length() != total) {
+            destFile.delete()
+            throw RuntimeException("合并后大小不符: ${destFile.length()} != $total")
+        }
+        cb(total, total)
+        DownloadService.progress(total, total)
+        return true
+    }
+
+    /** 下载单个分块；块 i 从轮转源开始，失败依次切下一个源，块内可断点续传 */
+    private fun downloadBlock(
+        index: Int, start: Long, end: Long, sources: List<String>, part: File,
+        sum: AtomicLong, cbLock: Any, onProgress: (Long) -> Unit
+    ) {
+        var pos = start + (if (part.isFile) part.length() else 0L)
+        if (pos > end) return
+        val rot = index % sources.size
+        val ordered = sources.drop(rot) + sources.take(rot)
+        var lastErr: Exception? = null
+        for (u in ordered) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = URL(u).openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 45000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", "MCFuwuqi/1.0")
+                conn.setRequestProperty("Range", "bytes=$pos-$end")
+                if (conn.responseCode != 206) throw RuntimeException("块 $index HTTP ${conn.responseCode} (源不支持 Range)")
+                conn.inputStream.use { ins ->
+                    val raf = RandomAccessFile(part, "rw")
+                    raf.seek(pos - start)
+                    try {
+                        val buf = ByteArray(64 * 1024)
+                        while (pos <= end) {
+                            val want = minOf(buf.size, (end - pos + 1).toInt())
+                            val c = ins.read(buf, 0, want)
+                            if (c < 0) break
+                            raf.write(buf, 0, c)
+                            pos += c
+                            onProgress(sum.addAndGet(c.toLong()))
+                        }
+                    } finally { raf.close() }
+                }
+                conn.disconnect()
+                if (pos > end) return
+            } catch (e: Exception) {
+                lastErr = e
+                conn?.disconnect()
+            }
+        }
+        throw RuntimeException("块 $index 下载失败 (pos=$pos, end=$end)", lastErr)
+    }
+
+    /** 单源整文件下载（含断点续传），作为不支持 Range 时的兜底 */
     private fun downloadOne(urlStr: String, destFile: File, cb: (Long, Long) -> Unit) {
-        // 每个源独立断点文件，切换源不清零、重进 App 可续传
         val tmp = File(destFile.absolutePath + "." + Integer.toHexString(urlStr.hashCode()) + ".part")
         var start = if (tmp.isFile) tmp.length() else 0L
         val conn = URL(urlStr).openConnection() as HttpURLConnection
@@ -50,14 +220,13 @@ object Dl {
         if (code !in 200..299) { conn.disconnect(); throw RuntimeException("HTTP $code $urlStr") }
         var total = conn.contentLengthLong
         if (code == 200 && start > 0) {
-            // 服务器不支持断点：从头来
             start = 0L
             total = conn.contentLengthLong
         } else if (code == 206) {
             total += start
         }
         conn.inputStream.use { ins ->
-            val raf = java.io.RandomAccessFile(tmp, "rw")
+            val raf = RandomAccessFile(tmp, "rw")
             raf.seek(start)
             try {
                 val buf = ByteArray(64 * 1024)
@@ -128,7 +297,6 @@ object Dl {
                     out.delete()
                     android.system.Os.symlink(e.linkName, out.absolutePath)
                 } catch (ex: Exception) {
-                    // FAT 等不支持 symlink：把目标内容拷过来兜底
                     try {
                         val t = File(outDir, e.linkName.removePrefix("/"))
                         if (t.isFile) t.copyTo(out, true)
@@ -137,7 +305,6 @@ object Dl {
                 continue
             }
             FileOutputStream(out).use { tar.copyTo(it) }
-            // 权限
             try {
                 val mode = e.mode and 0b111_111_111
                 android.system.Os.chmod(out.absolutePath, mode)
