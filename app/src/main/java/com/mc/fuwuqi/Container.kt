@@ -7,9 +7,17 @@ import org.json.JSONArray
 /** 容器层：proot（native libs，随 APK 内置）+ Debian rootfs（内置 assets）+ JRE 按需下载 */
 object Container {
 
-    /** 各 JRE：Adoptium API 直链（跟随重定向），失败走清华镜像目录解析 */
+    /** JRE 主源：本仓库 javalts 目录（xz 压缩，按需下载）；Adoptium 仅作兜底 */
     const val ADOPTIUM = "https://api.adoptium.net/v3/binary/latest/%d/ga/linux/aarch64/jre/hotspot/normal/eclipse"
-    const val TUNA_DIR = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/%d/jre/aarch64/linux/"
+    const val JAVALTS = "https://raw.githubusercontent.com/onoomo/McPhone/main/javalts/"
+
+    /** 仓库 javalts 里的 5 个 JRE 文件名（tar.xz） */
+    val jreNames = mapOf(
+        8 to "OpenJDK8U-jre_aarch64_linux_hotspot_8u512b09.tar.xz",
+        11 to "OpenJDK11U-jre_aarch64_linux_hotspot_11.0.33_10.tar.xz",
+        17 to "OpenJDK17U-jre_aarch64_linux_hotspot_17.0.21_9.tar.xz",
+        21 to "OpenJDK21U-jre_aarch64_linux_hotspot_21.0.13_9.tar.xz",
+        25 to "OpenJDK25U-jre_aarch64_linux_hotspot_25.0.5_8.tar.xz")
 
     val jdkDesc = mapOf(
         8 to "支持 1.7 – 1.16.5",
@@ -59,7 +67,7 @@ object Container {
 
     fun downloadJdk(v: Int, cb: (String) -> Unit): Boolean {
         if (Store.hasJdk(v)) return true
-        // 旧版本装在 runDir/jdk<v>（目录改名前）：直接迁移进容器，避免重下 45MB
+        // 旧版本装在 runDir/jdk<v>（目录改名前）：直接迁移进容器，避免重新下载
         val legacy = File(Store.runDir, "jdk$v")
         if (File(legacy, "bin/java").isFile) {
             cb("迁移已下载的 Java $v …")
@@ -69,51 +77,28 @@ object Container {
             File(dst, "bin/java").setExecutable(true)
             if (Store.hasJdk(v)) return true
         }
-        val tmp = File(Store.runDir, "jdk$v.tar.gz")
-        cb("下载 Java $v（约 45MB）…")
-        // 1) 清华 JRE（45MB，优先） 2) Adoptium JRE 3) gh-proxy
-        val repoNames = mapOf(
-            8 to "OpenJDK8U-jre_aarch64_linux_hotspot_8u504b01.tar.gz",
-            11 to "OpenJDK11U-jre_aarch64_linux_hotspot_11.0.32.1_1.tar.gz",
-            17 to "OpenJDK17U-jre_aarch64_linux_hotspot_17.0.20.1_1.tar.gz",
-            21 to "OpenJDK21U-jre_aarch64_linux_hotspot_21.0.12.1_1.tar.gz",
-            25 to "OpenJDK25U-jre_aarch64_linux_hotspot_25.0.4.1_1.tar.gz")
-        var pkgName = repoNames[v] ?: ""
+        val tmp = File(Store.runDir, "jdk$v.tar.xz")
+        cb("下载 Java $v …")
+        // 主源：本仓库 javalts（Dl.download 内部自带 原址 → gh-proxy → ghproxy.net 兜底）；只下所选版本
+        val name = jreNames[v] ?: throw RuntimeException("不支持的 Java 版本 $v")
         try {
-            val html = Dl.fetchText(TUNA_DIR.format(v))
-            val rx = Regex("OpenJDK${v}U-(?:jre|jdk)_aarch64_linux_hotspot_[0-9][0-9a-zA-Z._-]*\\.tar\\.gz")
-            pkgName = rx.findAll(html).map { it.value }.distinct().lastOrNull() ?: pkgName
-            Dl.download(TUNA_DIR.format(v) + pkgName, tmp) { cur, tot ->
+            Dl.download(JAVALTS + name, tmp) { cur, tot ->
                 cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
             }
         } catch (e: Exception) {
-            // 清华失败 → 本仓库 jre-assets（Temurin 官方包镜像）
+            // 兜底：Adoptium 官方（tar.gz，解包按魔数嗅探兼容）
+            cb("仓库 JRE 不可用，尝试 Adoptium …")
             try {
-                cb("清华失败，尝试本仓库 JRE 源 …")
-                try {
-                    Dl.download("https://gh-proxy.com/https://github.com/likesugar/MC_fuwuqi/releases/download/jre-assets/$pkgName", tmp) { cur, tot ->
-                        cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
-                    }
-                } catch (e4: Exception) {
-                    cb("代理失败，尝试直连 …")
-                    Dl.download("https://github.com/likesugar/MC_fuwuqi/releases/download/jre-assets/$pkgName", tmp) { cur, tot ->
-                        cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
-                    }
+                Dl.download(String.format(ADOPTIUM, v), tmp) { cur, tot ->
+                    cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
                 }
-            } catch (e3: Exception) {
-                cb("本仓库失败，尝试 Adoptium …")
-                try {
-                    Dl.download(String.format(ADOPTIUM, v), tmp) { cur, tot ->
-                        cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
-                    }
-                } catch (e2: Exception) {
-                    Dl.download("https://gh-proxy.com/" + String.format(ADOPTIUM, v), tmp) { cur, tot ->
-                        cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
-                    }
+            } catch (e2: Exception) {
+                Dl.download("https://gh-proxy.com/" + String.format(ADOPTIUM, v), tmp) { cur, tot ->
+                    cb("下载 Java $v ${fmt(cur)}" + (if (tot > 0) " / ${fmt(tot)}" else ""))
                 }
             }
         }
-cb("解包 Java $v …")
+        cb("解包 Java $v …")
         // 参照物同款：strip 顶层目录直接解进 rootfs/opt/jdk-<v>
         val dst = Store.jdkDir(v)
         dst.deleteRecursively(); dst.mkdirs()
