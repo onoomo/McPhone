@@ -11,8 +11,10 @@
 
 | Java | 文件 |
 | --- | --- |
-| 8 | OpenJDK8U-jre_aarch64_linux_hotspot_8u512b09.tar.gz |
-| 11 | OpenJDK11U-jre_aarch64_linux_hotspot_11.0.33_10.tar.gz |
-| 17 | OpenJDK17U-jre_aarch64_linux_hotspot_17.0.21_9.tar.gz |
-| 21 | OpenJDK21U-jre_aarch64_linux_hotspot_21.0.13_9.tar.gz |
-| 25 | OpenJDK25U-jre_aarch64_linux_hotspot_25.0.5_8.tar.gz |
+| 8 | OpenJDK8U-jre_aarch64_linux_hotspot_8u512b09.tar.xz |
+| 11 | OpenJDK11U-jre_aarch64_linux_hotspot_11.0.33_10.tar.xz |
+| 17 | OpenJDK17U-jre_aarch64_linux_hotspot_17.0.21_9.tar.xz |
+| 21 | OpenJDK21U-jre_aarch64_linux_hotspot_21.0.13_9.tar.xz |
+| 25 | OpenJDK25U-jre_aarch64_linux_hotspot_25.0.5_8.tar.xz |
+
+> 说明：为便于上传分发，JRE 采用 xz 压缩（比 gzip 小约 35%）。App 的 `Dl.extractTar()` 已支持按魔数嗅探 tar.gz / tar.xz 两种格式，可直接解包使用。
