@@ -16,16 +16,25 @@ class DownloadService : Service() {
     companion object {
         private const val CH = "dl"
         private const val NOTI_ID = 2001
-        private var running = false
+        @Volatile private var running = false
         @Volatile var title: String = "正在下载"
         @Volatile var cur: Long = 0
         @Volatile var total: Long = -1
+        // 活动下载计数：Dl.download 里 start/stop 严格配对。并发/嵌套下载时，
+        // 只有最后一个结束才停服务，避免先结束的那个把服务停掉导致其他下载通知消失。
+        private val refLock = Any()
+        private var refCount = 0
         fun start(ctx: Context, t: String) {
-            title = t
+            synchronized(refLock) { refCount++; title = t }
             ctx.startForegroundService(Intent(ctx, DownloadService::class.java))
         }
         fun stop(ctx: Context) {
-            if (running) ctx.stopService(Intent(ctx, DownloadService::class.java))
+            val last = synchronized(refLock) {
+                refCount = (refCount - 1).coerceAtLeast(0)
+                refCount == 0
+            }
+            // stopService 幂等安全，无需检查 running，避免竞态下服务停不掉
+            if (last) ctx.stopService(Intent(ctx, DownloadService::class.java))
         }
         fun progress(c: Long, t: Long) { cur = c; total = t }
     }
