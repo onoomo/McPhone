@@ -283,9 +283,9 @@ object ServerManager {
                             logLine("· 服务器崩溃，5 秒后自动重启（第 $restartCount 次）…")
                             notifyCrash(lastCtx, true)
                             try { Thread.sleep(5000) } catch (_: Exception) {}
-                            start(lastCtx ?: return@Thread, srv, fromCrash = true) {
-                                logLine(if (it == "OK") "· 自动重启成功" else "· 自动重启失败：$it")
-                            }
+                            start(lastCtx ?: return@Thread, srv, { r ->
+                                logLine(if (r == "OK") "· 自动重启成功" else "· 自动重启失败：$r")
+                            }, fromCrash = true)
                         }
                     }
                 }
