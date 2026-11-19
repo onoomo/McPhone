@@ -18,7 +18,7 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory
 /** HTTP 下载 + tar.xz / tar.gz 解包 */
 object Dl {
 
-    private const val CHUNKS = 8                 // 分块数（并发线程数）
+    private const val CHUNKS = 15               // 分块数（并发线程数）
     private const val MIN_PARALLEL = 2L * 1024 * 1024  // 小于 2MB 不分包
 
     /** 下载到 destFile，cb(current,total) 节流回调，total 可为 -1 */
@@ -76,6 +76,10 @@ object Dl {
     ): Boolean {
         val n = CHUNKS
         val blockSize = (total + n - 1) / n
+        // 线程数变更会让旧分块边界失效，清理旧断点从头下载，避免合并错乱
+        destFile.parentFile?.listFiles()?.forEach { f ->
+            if (f.name.startsWith(destFile.name + ".blk")) f.delete()
+        }
         val sum = AtomicLong(0)
         val done = AtomicLongArray(n)
         val firstErr = AtomicReference<Throwable?>(null)
