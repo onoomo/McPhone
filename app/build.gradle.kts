@@ -12,8 +12,8 @@ android {
         applicationId = "com.mc.fuwuqi"
         minSdk = 24
         targetSdk = 36
-        // 正式版：外部版本号 1.0.0，内部版本号 1
-        versionCode = 1
+        // 正式版：外部版本号 1.0.0，内部版本号 2（修复版，便于覆盖安装旧包）
+        versionCode = 2
         versionName = "1.0.0"
     }
 
