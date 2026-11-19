@@ -140,12 +140,12 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
             return
         }
         if (Ui.needStorageSilent(this)) refreshCurrent()
-        UiBus.subscribe { runOnUiThread { refreshCurrent() } }
+        UiBus.subscribe(this) { runOnUiThread { refreshCurrent() } }
     }
 
     override fun onPause() {
         super.onPause()
-        UiBus.unsubscribe { refreshCurrent() }
+        UiBus.unsubscribe(this)
     }
 
     private fun refreshCurrent() {
