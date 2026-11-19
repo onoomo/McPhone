@@ -99,7 +99,7 @@ object SettingsUi {
         val refresh = Ui.text(a, "刷新状态", 14f, a.getColor(R.color.green), true)
         refresh.setOnClickListener { render(host, a) }
         foot.addView(refresh, Ui.lp(0, -2, 1f))
-        foot.addView(Ui.text(a, "每个版本约 45MB", 12f, a.getColor(R.color.text_sub)))
+        foot.addView(Ui.text(a, "每个版本 25–37MB", 12f, a.getColor(R.color.text_sub)))
         foot.setPadding(0, Ui.px(a, 6), 0, 0)
         jc.addView(foot)
         host.addView(jc, Ui.lp(-1, -2).also { it.topMargin = Ui.px(a, 4) })
