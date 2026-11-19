@@ -113,16 +113,21 @@ object ServerManager {
     fun start(ctx: android.content.Context, srv: JSONObject, cb: (String) -> Unit) {
         userStop = false; restartCount = 0; lastCtx = ctx
         val sid = srv.optString("id")
+        // 若已有服务器在跑，直接返回，不注册任何备份任务
+        if (runningId != null || starting) { cb("ERR:已有服务器在运行"); return }
+        starting = true
+        // 崩溃自动重启/重复 start 会再次走到这里：先移除旧 periodic，保证任意时刻最多一个，
+        // 否则旧的 periodic 因自身无条件 postDelayed 会永久每 30 分钟触发，停服后也不停。
+        backupRunnable?.let { backupHandler.removeCallbacks(it) }
         val periodic = object : Runnable {
             override fun run() {
+                if (userStop) return  // 用户已停服，不再续期
                 if (isRunning(sid)) autoBackup(sid)
                 backupHandler.postDelayed(this, 30 * 60 * 1000L)
             }
         }
-        backupHandler.postDelayed(periodic, 30 * 60 * 1000L)
         backupRunnable = periodic
-        if (runningId != null || starting) { cb("ERR:已有服务器在运行"); return }
-        starting = true
+        backupHandler.postDelayed(periodic, 30 * 60 * 1000L)
         Store.initInternal(ctx.applicationContext)
         Thread {
             try {
