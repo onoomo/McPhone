@@ -12,12 +12,12 @@ class SettingsActivity : androidx.appcompat.app.AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         render()
-        UiBus.subscribe { runOnUiThread { render() } }
+        UiBus.subscribe(this) { runOnUiThread { render() } }
     }
 
     override fun onPause() {
         super.onPause()
-        UiBus.unsubscribe { render() }
+        UiBus.unsubscribe(this)
     }
 
     override fun onCreate(b: Bundle?) {
