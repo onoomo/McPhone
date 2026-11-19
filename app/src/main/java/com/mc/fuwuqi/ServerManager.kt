@@ -48,7 +48,8 @@ object ServerManager {
             if (buf.length > MAX_BUF) buf.delete(0, buf.length - MAX_BUF)
         }
         val line = s
-        synchronized(listeners) { listeners.toList().forEach { it(line) } }
+        val snapshot = synchronized(listeners) { listeners.toList() }
+        snapshot.forEach { try { it(line) } catch (_: Exception) {} }
     }
 
     fun consoleText(): String = synchronized(buf) { buf.toString() }
