@@ -8,7 +8,6 @@ import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -21,12 +20,17 @@ object Dl {
     private const val CHUNKS = 15               // 分块数（并发线程数）
     private const val MIN_PARALLEL = 2L * 1024 * 1024  // 小于 2MB 不分包
 
+    /** 分块文件名带线程数前缀：线程数变化时旧块边界失效，只复用同线程数的块 */
+    private fun blkFile(dest: File, i: Int) = File(dest.absolutePath + ".b${CHUNKS}_$i")
+
     /** 下载到 destFile，cb(current,total) 节流回调，total 可为 -1 */
     fun download(urlStr: String, destFile: File, cb: (Long, Long) -> Unit = { _, _ -> }): Boolean {
         destFile.parentFile?.mkdirs()
         DownloadService.start(App.inst, "下载 ${destFile.name}")
         DownloadService.progress(0, -1)
         try {
+            // 目标文件只有在"完整落地"后才会出现（分块合并写入 .merging，校验通过才 rename），
+            // 因此存在即视为已下载完成，正常复用不产生额外网络探测。
             if (destFile.exists() && destFile.length() > 0) return true
             val sources = listOf(urlStr, "https://gh-proxy.com/$urlStr", "https://ghproxy.net/$urlStr")
             val total = probeTotal(sources)
@@ -76,12 +80,18 @@ object Dl {
     ): Boolean {
         val n = CHUNKS
         val blockSize = (total + n - 1) / n
-        // 线程数变更会让旧分块边界失效，清理旧断点从头下载，避免合并错乱
+        // 只清理"线程数前缀不匹配"的旧块；同线程数的断点保留以续传，避免每次都从头下。
+        // 兼容历史命名 .blkN（8 线程版）与 .b<线程数>_N（本版），其余文件一律不碰。
+        val keepPrefix = destFile.name + ".b${CHUNKS}_"
+        val blockHead = destFile.name + ".b"
+        val legacyHead = destFile.name + ".blk"
         destFile.parentFile?.listFiles()?.forEach { f ->
-            if (f.name.startsWith(destFile.name + ".blk")) f.delete()
+            val isBlock = f.name.startsWith(blockHead) || f.name.startsWith(legacyHead)
+            if (isBlock && !f.name.startsWith(keepPrefix)) f.delete()
         }
+        // 上次合并可能留下残缺的临时文件，先清掉
+        File(destFile.absolutePath + ".merging").delete()
         val sum = AtomicLong(0)
-        val done = AtomicLongArray(n)
         val firstErr = AtomicReference<Throwable?>(null)
         val latch = CountDownLatch(n)
         val pool = Executors.newFixedThreadPool(n)
@@ -93,9 +103,8 @@ object Dl {
             val start = blockSize * i
             if (start >= total) { latch.countDown(); continue }
             val end = minOf(start + blockSize - 1, total - 1)
-            val part = File(destFile.absolutePath + ".blk$i")
+            val part = blkFile(destFile, i)
             val initial = if (part.isFile) minOf(part.length(), end - start + 1) else 0L
-            done.set(i, initial)
             sum.addAndGet(initial)
 
             pool.execute {
@@ -129,19 +138,21 @@ object Dl {
         }
 
         firstErr.get()?.let { err ->
-            for (i in 0 until n) File(destFile.absolutePath + ".blk$i").delete()
+            for (i in 0 until n) blkFile(destFile, i).delete()
             throw RuntimeException("分块下载失败", err)
         }
 
-        // 顺序合并所有块到目标文件
-        val out = RandomAccessFile(destFile, "rw")
+        // 顺序合并所有块到"临时文件"，校验通过后再原子落地到 destFile。
+        // 这样任何中途异常都不会在 destFile 留下残缺内容被误判为已完成。
+        val merging = File(destFile.absolutePath + ".merging")
+        val out = RandomAccessFile(merging, "rw")
         try {
             out.setLength(0)
             val buf = ByteArray(256 * 1024)
             for (i in 0 until n) {
                 val start = blockSize * i
                 if (start >= total) break
-                val part = File(destFile.absolutePath + ".blk$i")
+                val part = blkFile(destFile, i)
                 if (!part.isFile) throw RuntimeException("缺少分块 $i")
                 part.inputStream().use { ins ->
                     while (true) {
@@ -150,15 +161,22 @@ object Dl {
                         out.write(buf, 0, c)
                     }
                 }
-                part.delete()
             }
         } finally {
             out.close()
         }
-        if (destFile.length() != total) {
-            destFile.delete()
-            throw RuntimeException("合并后大小不符: ${destFile.length()} != $total")
+        if (merging.length() != total) {
+            merging.delete()
+            throw RuntimeException("合并后大小不符: ${merging.length()} != $total")
         }
+        // 校验通过，落地：删旧目标 + 重命名（同目录内 rename 为原子操作）
+        if (destFile.exists()) destFile.delete()
+        if (!merging.renameTo(destFile)) {
+            merging.delete()
+            throw RuntimeException("无法写入目标文件: ${destFile.name}")
+        }
+        // 合并成功后才删除各分块，保留到确认落地为止
+        for (i in 0 until n) blkFile(destFile, i).delete()
         cb(total, total)
         DownloadService.progress(total, total)
         return true
