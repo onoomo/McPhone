@@ -22,6 +22,8 @@ object ServerManager {
     @Volatile private var userStop = false
     @Volatile private var restartCount = 0
     @Volatile private var lastCrashMs = 0L
+    // 崩溃自动重启前置位：让紧随的 start() 不重置 restartCount（否则连续崩溃计数永远到不了上限）
+    @Volatile private var keepCrashCount = false
     @Volatile private var lastCtx: android.content.Context? = null
     private var stdin: PrintWriter? = null
     private var watcher: Thread? = null
@@ -109,11 +111,11 @@ object ServerManager {
         return out.toList()
     }
 
-    /** 启动（异步，进度经 cb 回调）。成功回调 "OK"，失败回调 "ERR:xxx"
-     *  fromCrash=true 表示崩溃自动重启：不能重置 restartCount，否则连续崩溃计数永远到不了上限。 */
-    fun start(ctx: android.content.Context, srv: JSONObject, cb: (String) -> Unit, fromCrash: Boolean = false) {
+    /** 启动（异步，进度经 cb 回调）。成功回调 "OK"，失败回调 "ERR:xxx" */
+    fun start(ctx: android.content.Context, srv: JSONObject, cb: (String) -> Unit) {
         userStop = false
-        if (!fromCrash) restartCount = 0
+        // 崩溃自动重启路径已提前置 keepCrashCount=true，此处保留计数；用户手动启动则清零
+        if (keepCrashCount) keepCrashCount = false else restartCount = 0
         lastCtx = ctx
         val sid = srv.optString("id")
         // 若已有服务器在跑，直接返回，不注册任何备份任务
@@ -283,9 +285,10 @@ object ServerManager {
                             logLine("· 服务器崩溃，5 秒后自动重启（第 $restartCount 次）…")
                             notifyCrash(lastCtx, true)
                             try { Thread.sleep(5000) } catch (_: Exception) {}
-                            start(lastCtx ?: return@Thread, srv, { r ->
+                            keepCrashCount = true  // 崩溃重启：保留连续崩溃计数
+                            start(lastCtx ?: return@Thread, srv) { r ->
                                 logLine(if (r == "OK") "· 自动重启成功" else "· 自动重启失败：$r")
-                            }, fromCrash = true)
+                            }
                         }
                     }
                 }
