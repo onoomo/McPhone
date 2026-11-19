@@ -268,8 +268,8 @@ class ConsoleActivity : androidx.appcompat.app.AppCompatActivity() {
         render()
     }
 
-    override fun onResume() { super.onResume(); render(); UiBus.subscribe { runOnUiThread { render() } } }
-    override fun onPause() { super.onPause(); UiBus.unsubscribe { render() } }
+    override fun onResume() { super.onResume(); render(); UiBus.subscribe(this) { runOnUiThread { render() } } }
+    override fun onPause() { super.onPause(); UiBus.unsubscribe(this) }
 
     private fun notifyPlayer(name: String, joined: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -486,7 +486,7 @@ class ConsoleActivity : androidx.appcompat.app.AppCompatActivity() {
         if (this::perfHandler.isInitialized) perfHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
         ServerManager.offLine(lineCb)
-        UiBus.unsubscribe { render() }
+        UiBus.unsubscribe(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
