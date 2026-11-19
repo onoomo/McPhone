@@ -161,10 +161,10 @@ class NewServerActivity3 : androidx.appcompat.app.AppCompatActivity() {
                 try {
                     val arr = Store.loadServers(); arr.put(o); Store.saveServers(arr)
                     val dir = Store.serverDir(o.optString("id")); dir.mkdirs()
-                    Cores.download(core, version, dir) { s -> runOnUiThread { go.text = s } }
+                    Cores.download(core, version, dir) { s -> runOnUiThread { if (!isFinishing && !isDestroyed) go.text = s } }
                     var cross: Cores.Crossplay? = null
                     if (core == Cores.CROSSPLAY) {
-                        cross = Cores.installCrossplayPlugins(dir, o.optBoolean("onlineMode", false), o.optInt("port", 25565)) { s -> runOnUiThread { go.text = s } }
+                        cross = Cores.installCrossplayPlugins(dir, o.optBoolean("onlineMode", false), o.optInt("port", 25565)) { s -> runOnUiThread { if (!isFinishing && !isDestroyed) go.text = s } }
                         // 记下这版 Geyser 支持的基岩版版本：首页卡片、控制台页都靠它显示
                         cross?.bedrockVersion?.let { bv ->
                             o.put("bedrockVersion", bv)
@@ -187,6 +187,7 @@ class NewServerActivity3 : androidx.appcompat.app.AppCompatActivity() {
                         existing.add(0, "online-mode=${o.optBoolean("onlineMode", false)}")
                     propsFile.writeText(existing.joinToString("\n") + "\n")
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         val bv = o.optString("bedrockVersion")
                         Ui.toast(this, if (bv.isNotEmpty()) "创建完成 · 基岩版 $bv（端口 19132）" else "创建完成")
                         setResult(android.app.Activity.RESULT_OK)
@@ -196,6 +197,7 @@ class NewServerActivity3 : androidx.appcompat.app.AppCompatActivity() {
                     }
                 } catch (e: Exception) {
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         go.isEnabled = true; go.text = "创 建"
                         if (e.message?.contains("互通服需要 Paper") == true) {
                             androidx.appcompat.app.AlertDialog.Builder(this)
