@@ -345,8 +345,8 @@ object Cores {
      * 不装这个，Geyser 启动时只会打一行 WARN，等基岩玩家真的连进来才因为版本不符被踢，
      * 表现就是"能连上服务器、进世界时失败"。所以互通服必须带上它。
      *
-     * 精简构建不再把约 6.5MB 的 jar 打进 APK，改为首次创建互通服时从本仓库 bridge-assets
-     * 镜像下载（gh-proxy 代理优先、直连兜底），下载一次后落盘复用。
+     * 精简构建不再把约 6.5MB 的 jar 打进 APK，改为首次创建互通服时从本仓库
+     * onoomo/McPhone 的 bridge-assets 目录下载（直连优先、gh-proxy 代理兜底），下载一次后落盘复用。
      */
     fun ensureViaVersion(dir: File, cb: (String) -> Unit): Boolean {
         val plugins = File(dir, "plugins").apply { mkdirs() }
@@ -355,8 +355,8 @@ object Cores {
         } == true
         if (exists) return true
         val dest = File(plugins, "ViaVersion-$VIA_VER.jar")
-        // Dl.download 内部自带多源兜底（直连 + gh-proxy + ghproxy.net）
-        val direct = "https://github.com/likesugar/MC_fuwuqi/releases/download/bridge-assets/ViaVersion-$VIA_VER.jar"
+        // 从本仓库 bridge-assets 目录下载；Dl.download 自带多源兜底（直连 + gh-proxy + ghproxy.net）
+        val direct = "https://raw.githubusercontent.com/onoomo/McPhone/main/bridge-assets/ViaVersion-$VIA_VER.jar"
         cb("下载版本桥接插件 ViaVersion $VIA_VER …")
         return try {
             val ok = Dl.download(direct, dest) { _, _ -> }
